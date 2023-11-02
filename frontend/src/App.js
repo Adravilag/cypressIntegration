@@ -1,27 +1,27 @@
-import React, { Component } from "react";
+import React, { Component, createRef } from "react";
 import axios from "axios";
-import IframeComponent from "./IframeComponent";
 import "./App.css"; // Importa el archivo CSS aquí
-
-const TEST_TO_PORT_MAPPING = {
-  "cypress/e2e/screens/prueba/prueba.cy.js": 4001,
-  "cypress/e2e/screens/prueba-2/prueba-2.cy.js": 4002,
-  "cypress/e2e/screens/prueba-3/prueba-3.cy.js": 4003,
-};
+import IframeComponent from "./IframeComponent";
+import TestSelector from "./TestSelector";
+import Logs from "./Logs";
+import { TEST_TO_PORT_MAPPING } from "./constants";
+import { generateTestFile, downloadTestFile } from "./helpers";
 
 class App extends Component {
+  constructor(props) {
+    super(props);
+    this.iframeRef = createRef();
+  }
+
   state = {
     logs: "",
-    selectedTest: "cypress/e2e/screens/prueba/prueba.cy.js",
-    availableTests: [
-      "cypress/e2e/screens/prueba/prueba.cy.js",
-      "cypress/e2e/screens/prueba-2/prueba-2.cy.js",
-      "cypress/e2e/screens/prueba-3/prueba-3.cy.js",
-    ],
-    selectedScreen: "http://localhost:3001",
+    selectedTest: Object.keys(TEST_TO_PORT_MAPPING)[0],
+    selectedScreen: "",
     isLoading: false,
     error: null,
     hasTestStarted: false,
+    recording: false,
+    actions: [],
   };
 
   handleTestChange = (event) => {
@@ -31,108 +31,63 @@ class App extends Component {
   startTests = async () => {
     this.setState({ logs: "", isLoading: true, error: null });
     try {
-      const selectedTest = this.state.selectedTest;
-      const port = this.getPortBasedOnTest(selectedTest);
-      this.setState({
-        selectedScreen: `http://localhost:${port}`,
-        hasTestStarted: true,
-      });
-
-      const response = await axios.post(
-        "http://localhost:8080/api/tests/start",
-        {
-          test: selectedTest,
-          port,
-        }
-      );
-      console.log("Pruebas iniciadas:", response.data);
-
-      if (response.data && response.data.logs) {
-        this.setState({ logs: response.data.logs });
+      const { selectedTest } = this.state;
+      const port = TEST_TO_PORT_MAPPING[selectedTest];
+      if (!port) {
+        throw new Error("No se encontró el puerto para la prueba seleccionada.");
       }
+      this.setState({ selectedScreen: `http://localhost:${port}`, hasTestStarted: true });
+      const response = await axios.post("http://localhost:8080/api/tests/start", { test: selectedTest, port });
+      this.setState({ logs: response.data.logs });
     } catch (error) {
+      this.setState({ error: "Error al iniciar las pruebas. Por favor, intente de nuevo." });
       console.error("Error al iniciar las pruebas:", error);
-      this.setState({
-        error: "Error al iniciar las pruebas. Por favor, intente de nuevo.",
-      });
     } finally {
       this.setState({ isLoading: false });
     }
   };
 
-  getPortBasedOnTest = (test) => {
-    const port = TEST_TO_PORT_MAPPING[test];
-    if (!port) {
-      console.error(
-        "No se encontró el puerto para la prueba seleccionada:",
-        test
-      );
-      throw new Error("No se encontró el puerto para la prueba seleccionada.");
+  recordClick = (event) => {
+    console.log("Click registrado:", event);
+    if (this.state.recording) {
+      const action = `cy.get('${event.target.tagName}').click();`;
+      this.setState((prevState) => ({ actions: [...prevState.actions, action] }));
     }
-    return port;
   };
 
-  renderLogs() {
-    const { logs, isLoading } = this.state;
-
-    if (isLoading) {
-      return <div className="Message">Cargando pruebas...</div>;
-    }
-
-    if (!logs) return null;
-
-    return (
-      <div className="LogsContainer">
-        <h2 className="LogsTitle">Logs de las Pruebas:</h2>
-        <pre className="PreformattedText">{logs}</pre>
-      </div>
-    );
-  }
-
-  renderError() {
-    if (!this.state.error) return null;
-
-    return <div className="Error">{this.state.error}</div>;
-  }
-
+  startRecording = () => {
+    console.log("Iniciando grabación");
+    this.setState({ recording: true, actions: [] });
+    //...
+  };
+  
+  stopRecording = () => {
+    console.log(this.state.actions); // Verifica si hay acciones grabadas
+    this.setState({ recording: false });
+    const testFileContent = generateTestFile(this.state.actions);
+    downloadTestFile(testFileContent);
+  };
+  
   render() {
+    const { selectedTest, isLoading, recording, logs, error, hasTestStarted, selectedScreen } = this.state;
+
     return (
       <div className="App">
         <h1>Cypress Test App</h1>
-        <div className="SelectorContainer">
-          <label className="Label" htmlFor="testSelector">
-            Seleccione un test:{" "}
-          </label>
-          <select
-            className="Select"
-            id="testSelector"
-            value={this.state.selectedTest}
-            onChange={this.handleTestChange}
-          >
-            {this.state.availableTests.map((test) => (
-              <option key={test} value={test}>
-                {test}
-              </option>
-            ))}
-          </select>
-        </div>
-        <button
-          className="Button"
-          onClick={this.startTests}
-          disabled={this.state.isLoading || !this.state.selectedTest}
-        >
+        <TestSelector value={selectedTest} onChange={this.handleTestChange} isLoading={isLoading} />
+        <button className="Button" onClick={this.startTests} disabled={isLoading || !selectedTest}>
           Iniciar Pruebas
         </button>
-        {this.renderError()}
-        {this.state.hasTestStarted ? (
-          <IframeComponent src={this.state.selectedScreen} />
+        <button className="Button" onClick={recording ? this.stopRecording : this.startRecording} style={{ backgroundColor: recording ? "red" : undefined }}>
+          {recording ? "Detener Grabación" : "Iniciar Grabación"}
+        </button>
+        {error && <div className="Error">{error}</div>}
+        {hasTestStarted ? (
+          <IframeComponent src={selectedScreen} onRecordClick={this.recordClick} ref={this.iframeRef} />
         ) : (
-          <div className="Message">
-            Por favor, selecciona una prueba y haz clic en "Iniciar Pruebas"
-            para comenzar.
-          </div>
+          <div className="Message">Por favor, selecciona una prueba y haz clic en "Iniciar Pruebas" para comenzar.</div>
         )}
-        {this.renderLogs()}
+        <Logs logs={logs} isLoading={isLoading} />
       </div>
     );
   }
